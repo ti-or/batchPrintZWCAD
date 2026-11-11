@@ -221,6 +221,13 @@ public static partial class PlotterService
     /** EnsureTextGeometryMode：PDF 出图前按设置切换文本转几何相关模式。 */
     private static void EnsureTextGeometryMode(string deviceName, bool convertToGeometry)
     {
+        // 系统打印机没有插件自有 PC3/PMP：文字按文字还是图形输出由打印机驱动决定，
+        // 不能套用 LA_pdf/LA_dwf 的文字模式，也不能因为打开该选项而拒绝纸质打印。
+        if (PaperOutput.IsSystemPrinterDevice(deviceName))
+        {
+            return;
+        }
+
         WaitForPlotIdle();
         var result = AcadPlotterInstaller.ApplyTextGeometryMode(deviceName, convertToGeometry);
         if (!result.Success)

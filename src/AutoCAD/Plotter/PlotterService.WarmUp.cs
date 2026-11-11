@@ -128,7 +128,7 @@ public static partial class PlotterService
     /** BuildWarmUpStages：预热分段。每段都很短，可在两次 UI 空闲之间完成。 */
     private static List<Action> BuildWarmUpStages(string deviceName, string? styleSheet)
     {
-        return new List<Action>
+        var stages = new List<Action>
         {
             // 首次打印会写 plot.log；关闭后首张不再有这段文件 IO 停顿（探测失败则维持原状）。
             TryDisableAutomaticPlotLog,
@@ -138,9 +138,16 @@ public static partial class PlotterService
             () => WarmUpMediaCatalog(deviceName),
             // 绑定设备并加载打印样式表。
             () => WarmUpDeviceAndStyle(deviceName, styleSheet),
-            // 驱动级预热：实际绘图驱动在首次 BeginDocument 才加载，用近空白小图逼出来。
-            () => TryWarmUpDriverWithBlankPlot(deviceName, styleSheet),
         };
+
+        // 驱动级预热：实际绘图驱动在首次 BeginDocument 才加载，用近空白小图逼出来。
+        // 系统打印机不能走「输出到临时文件」的预热，否则会真送一张空白纸到打印机。
+        if (!PaperOutput.IsSystemPrinterDevice(deviceName))
+        {
+            stages.Add(() => TryWarmUpDriverWithBlankPlot(deviceName, styleSheet));
+        }
+
+        return stages;
     }
 
     private static void RunWarmUpStages(IEnumerable<Action> stages)

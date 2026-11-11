@@ -445,6 +445,7 @@ PlotterService.PlotMany(Jobs, deviceName, styleSheet, settings)
 | JPG | `LA_jpg.pc3` | `LA_jpg.pc5` | 像素 | 毫米 | 只接受插件自有设备，不使用 CAD 自带 JPG 设备兜底 |
 | DWF | 优先 `LA_dwf.pc3` | 优先 `LA_dwf.pc5` | 毫米 | 毫米 | 优先插件设备，兼容 CAD 原生 DWF 设备 |
 | DWG | 无绘图仪 | 无绘图仪 | 不适用 | 不适用 | 由 `DwgSplitService` 拆分；不提供打印预览 |
+| 纸质 | 用户所选系统打印机 | 用户所选系统打印机 | 毫米 | 毫米 | 设备名不是 PC3/PC5，纸张来自打印机驱动 |
 
 #### 设备安装、枚举与预览
 
@@ -632,6 +633,32 @@ SplitMany(jobs, document, settings, ...)
 - 再将 DCS 打印窗口四边各内退 **1mm 纸面**（`PaperInsetMm`），只裁打印内容，不把图框临时移到不打印层。
 - 内退后的窗口**不参与**比例或留白反算，避免 `ScaleToFit` 把内容放大铺满。
 - 纸面短边内退后不足 `MinimumRemainingShortSideMm` 时放弃内退。
+
+### 7.6 纸质打印（直接送系统打印机）
+
+**实现**：[`PaperOutput.cs`](src/Common/Services/Plotting/PaperOutput.cs)（公共部分）、`PlotterService.Media.cs` / `PlotterService.Pipeline.cs`（两个平台各一份）。
+
+纸质打印与电子输出的差别只有「设备」和「是否落盘」两处，窗口、比例、旋转、CTB、透明度、线宽等仍走同一条打印管道：
+
+```text
+输出格式 = 纸质
+  ├─ 设备 = 用户选择的系统打印机（名称不以 .pc3/.pc5 结尾）
+  ├─ 纸张 = 打印机驱动的介质列表，按图幅物理尺寸匹配（容差 3mm）
+  │     ├─ 命中 → 直接使用
+  │     ├─ 未命中且未勾选改纸 → 抛错并列出可用纸张（整张失败，不静默改纸）
+  │     └─ 未命中且勾选改纸 → 按长宽比与尺寸选最接近的纸张
+  ├─ 跳过 PMP 自定义纸张注册（系统打印机无法写 PMP）
+  ├─ 跳过 PrepareOutputFile / ValidatePlotOutput（没有输出文件）
+  └─ PlotEngine.BeginDocument(..., copies, plotToFile: false, null)
+```
+
+要点：
+
+- `PlotJob.PrintToDevice` 为 true 时 `OutputPath` 不参与出图；批量窗口在纸质模式下把 `OutputPath` 清空，清单「输出」列显示目标打印机。
+- `PlotEngine.BeginDocument` 的第 5 个参数是 `plotToFile`：电子输出传 `true` + 文件路径，纸质输出传 `false` + `null`，份数通过第 4 个参数交给引擎/驱动。
+- **预热不能对系统打印机做空白图预热**：`TryWarmUpDriverWithBlankPlot` 会向临时文件出图，系统打印机作为设备时可能真的吐一张空白纸，因此 `BuildWarmUpStages` 对系统打印机跳过该分段。
+- **文字转图形**只对插件自有 `LA_pdf`/`LA_dwf` 有意义，`EnsureTextGeometryMode` 对系统打印机直接返回，避免打开该选项后纸质打印被拒绝。
+- 中望与 AutoCAD 的差异只在纸张枚举方式：AutoCAD 复用 `GetMediaCatalog`（已含毫米尺寸）；中望的介质名缓存只有名称，纸质打印需逐个介质读 `PlotPaperSize`，并对英寸驱动做一次 `×25.4` 兜底。
 
 ---
 

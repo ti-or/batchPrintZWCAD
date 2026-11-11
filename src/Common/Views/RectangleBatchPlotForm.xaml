@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:ZwcadBatchPlot"
         x:Class="ZwcadBatchPlot.RectangleBatchPlotForm"
-        Title="LA通用型批量打印 V1.15.10"
+        Title="LA通用型批量打印 V1.16.0"
         Width="900" Height="520"
         MinWidth="720" MinHeight="460"
         WindowStartupLocation="CenterScreen"
@@ -140,8 +140,8 @@
                         Click="PrintOrStop_Click" />
             </Grid>
 
-            <!-- 选项行：保存路径 / 合并 PDF / 留白 -->
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+            <!-- 选项行：保存路径 / 合并 PDF / 留白；纸质打印不生成文件，整行隐藏。 -->
+            <StackPanel x:Name="_fileOptionsRow" Orientation="Horizontal" Margin="0,4,0,0">
                 <TextBlock Text="保存路径:" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <ComboBox x:Name="_savePathModeCombo" Width="170" IsEditable="False"
                           VerticalContentAlignment="Center" Margin="0,0,8,0"
@@ -158,6 +158,22 @@
                               VerticalContentAlignment="Center" Margin="0,0,2,0" />
                     <TextBlock Text="mm" VerticalAlignment="Center" Margin="2,0,0,0" />
                 </StackPanel>
+            </StackPanel>
+            <!-- 纸质打印行：输出格式选「纸质」时显示；直接送系统打印机，不生成文件。 -->
+            <StackPanel x:Name="_paperOutputPanel" Orientation="Horizontal" Margin="0,4,0,0"
+                        Visibility="Collapsed">
+                <TextBlock Text="打印机:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox x:Name="_printerCombo" Width="270" IsEditable="False"
+                          VerticalContentAlignment="Center" Margin="0,0,10,0"
+                          SelectionChanged="Printer_SelectionChanged"
+                          ToolTip="选择本机或网络打印机/绘图仪；纸张按每个矩形框的图幅自动选择。" />
+                <TextBlock Text="份数:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <TextBox x:Name="_copiesBox" Width="42" VerticalContentAlignment="Center"
+                         Margin="0,0,12,0" Text="1" LostFocus="CopiesBox_LostFocus"
+                         ToolTip="每张图纸打印份数（1-99）。" />
+                <CheckBox x:Name="_closestPaperCheckBox" Content="纸张不匹配时改用最接近的纸张"
+                          VerticalAlignment="Center"
+                          ToolTip="未勾选时，打印机缺少对应图幅会停止并列出可用纸张，避免打错纸。" />
             </StackPanel>
         </StackPanel>
 

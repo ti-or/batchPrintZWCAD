@@ -50,6 +50,8 @@ public static partial class PlotterService
         styleSheet = PlotStyleManager.ResolveJobStyle(job, styleSheet);
         // 勾选“打印对象线宽”时改用线宽全为“使用对象线宽”的样式表副本，其余样式设置不变。
         var styleChoice = ObjectLineweightPlotStyle.Resolve(styleSheet, settings.PlotObjectLineweights);
+        // 纸质打印直接把图纸交给打印机：没有输出文件，也不做文件落盘前准备与落盘后校验。
+        var printToDevice = job.PrintToDevice;
 
         var oldDatabase = HostApplicationServices.WorkingDatabase;
         HostApplicationServices.WorkingDatabase = db;
@@ -68,11 +70,24 @@ public static partial class PlotterService
                 settings.PlotTransparency);
             ObjectLineweightPlotStyle.LogEffective(plot.Settings, styleChoice, job, "");
 
-            PrepareOutputFile(job.OutputPath);
-            RunPlot(plot.Info, documentName, job.OutputPath, job.DrawingNumber);
+            if (!printToDevice)
+            {
+                PrepareOutputFile(job.OutputPath);
+            }
+
+            RunPlot(
+                plot.Info,
+                documentName,
+                job.OutputPath,
+                job.DrawingNumber,
+                printToDevice,
+                job.Copies);
             tr.Commit();
             WaitForPlotIdle();
-            ValidatePlotOutput(job.OutputPath);
+            if (!printToDevice)
+            {
+                ValidatePlotOutput(job.OutputPath);
+            }
         }
         finally
         {
@@ -254,8 +269,14 @@ public static partial class PlotterService
         ObjectLineweightPlotStyle.ApplyFlags(settings, styleChoice);
     }
 
-    /** RunPlot：调用 PlotEngine 把 PlotInfo 输出到文件，并等待引擎空闲。 */
-    private static void RunPlot(PlotInfo info, string documentName, string outputPath, string sheetName)
+    /** RunPlot：调用 PlotEngine 输出到文件或直接送打印机，并等待引擎空闲。 */
+    private static void RunPlot(
+        PlotInfo info,
+        string documentName,
+        string outputPath,
+        string sheetName,
+        bool printToDevice = false,
+        int copies = 1)
     {
         using var engine = PlotFactory.CreatePublishEngine();
         // 批打窗自己显示进度与「停止」时，不再弹出引擎进度框，避免把宿主窗盖住/挤到后面。
@@ -284,7 +305,14 @@ public static partial class PlotterService
 
             engine.BeginPlot(progress, null);
             plotStarted = true;
-            engine.BeginDocument(info, documentName, null, 1, true, outputPath);
+            // plotToFile=false 时由引擎把图送到设备；纸质打印的份数也在这里交给引擎（驱动不支持时会按 1 份处理）。
+            engine.BeginDocument(
+                info,
+                documentName,
+                null,
+                printToDevice ? Math.Max(1, copies) : 1,
+                !printToDevice,
+                printToDevice ? null : outputPath);
             documentStarted = true;
             progress?.OnBeginSheet();
             sheetStarted = progress != null;

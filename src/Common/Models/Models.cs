@@ -171,6 +171,16 @@ public sealed class PlotJob
     public string StyleSheet { get; set; } = "";
     /// <summary>打印区域 4 个实际 WCS 角点，格式 [x0,y0,x1,y1,x2,y2,x3,y3]。null 时用 Min/Max。</summary>
     public double[]? CornerPoints { get; set; }
+
+    /// <summary>
+    /// 纸质打印：直接把图框发送给系统打印机/绘图仪，不生成 PDF/PNG/JPG/DWF 文件。
+    /// 为 true 时 OutputPath 不参与出图，打印引擎按设备纸型直接送到打印机。
+    /// </summary>
+    public bool PrintToDevice { get; set; }
+    /// <summary>纸质打印份数；非纸质输出时固定为 1。</summary>
+    public int Copies { get; set; } = 1;
+    /// <summary>打印机没有任务图幅时，是否允许自动改用最接近的纸张；false 表示报错并停止。</summary>
+    public bool AllowClosestPaper { get; set; }
 }
 
 public enum TitleBlockScanScope

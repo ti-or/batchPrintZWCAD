@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:ZwcadBatchPlot"
         x:Class="ZwcadBatchPlot.BatchPlotForm"
-        Title="LA图框块批量打印 V1.15.10"
+        Title="LA图框块批量打印 V1.16.0"
         Width="900" Height="520"
         MinWidth="720" MinHeight="460"
         WindowStartupLocation="CenterScreen"
@@ -131,8 +131,25 @@
                         ToolTip="按输出格式打印 PDF/DWF、输出 PNG/JPG 或拆分为 DWG。" />
             </Grid>
 
-            <!-- 保存路径行（原 pathRow） -->
-            <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+            <!-- 纸质打印行：输出格式选「纸质」时显示；直接送系统打印机，不生成文件。 -->
+            <StackPanel x:Name="_paperOutputPanel" Orientation="Horizontal" Margin="0,2,0,0"
+                        Visibility="Collapsed">
+                <TextBlock Text="打印机:" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <ComboBox x:Name="_printerCombo" Width="270" IsEditable="False"
+                          VerticalContentAlignment="Center" Margin="0,0,10,0"
+                          SelectionChanged="Printer_SelectionChanged"
+                          ToolTip="选择本机或网络打印机/绘图仪；纸张按图框识别出的图幅自动选择。" />
+                <TextBlock Text="份数:" VerticalAlignment="Center" Margin="0,0,6,0" />
+                <TextBox x:Name="_copiesBox" Width="42" VerticalContentAlignment="Center"
+                         Margin="0,0,12,0" Text="1" LostFocus="CopiesBox_LostFocus"
+                         ToolTip="每张图纸打印份数（1-99）。" />
+                <CheckBox x:Name="_closestPaperCheckBox" Content="纸张不匹配时改用最接近的纸张"
+                          VerticalAlignment="Center"
+                          ToolTip="未勾选时，打印机缺少对应图幅会停止并列出可用纸张，避免打错纸。" />
+            </StackPanel>
+
+            <!-- 保存路径行（原 pathRow）：纸质打印不生成文件，整行隐藏。 -->
+            <StackPanel x:Name="_savePathRow" Orientation="Horizontal" Margin="0,2,0,0">
                 <TextBlock Text="保存路径:" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <ComboBox x:Name="_savePathModeCombo" Width="210" IsEditable="False"
                           VerticalContentAlignment="Center" Margin="0,0,8,0"

@@ -114,6 +114,17 @@ public sealed class AppSettings
     public bool AddFileNameSequence { get; set; }
     public bool LeavePaperMargin { get; set; }
     public double PaperMarginMm { get; set; } = 1;
+    /// <summary>
+    /// 批量打印窗口上次使用的输出格式：PDF / PNG / JPG / DWF / DWG / 纸质。
+    /// 首次使用（或旧配置没有该字段）按 PDF。
+    /// </summary>
+    public string LastOutputFormat { get; set; } = "PDF";
+    /// <summary>纸质打印上次选择的系统打印机/绘图仪名称。</summary>
+    public string LastPrinterName { get; set; } = "";
+    /// <summary>纸质打印份数，默认 1，合法范围见 <see cref="PaperOutput"/>。</summary>
+    public int PrintCopies { get; set; } = 1;
+    /// <summary>纸质打印时打印机没有任务图幅，是否自动改用最接近的纸张。默认关闭，避免打错纸。</summary>
+    public bool PrintUseClosestPaper { get; set; }
     /// <summary>图框块批量打印的主排序依据；通用型批量打印不读取此设置。</summary>
     public TitleBlockSortMode TitleBlockBatchSortMode { get; set; } = TitleBlockSortMode.DrawingNumber;
     /// <summary>图框库批量打印空间排序方向：true=从左到右从上到下，false=从上到下从左到右。</summary>
@@ -383,6 +394,12 @@ public static class AppSettingsStore
         {
             settings.PaperMarginMm = 1; // 0 无意义，默认1mm缩比例模式
         }
+
+        settings.LastOutputFormat = string.IsNullOrWhiteSpace(settings.LastOutputFormat)
+            ? "PDF"
+            : settings.LastOutputFormat.Trim();
+        settings.LastPrinterName = (settings.LastPrinterName ?? "").Trim();
+        settings.PrintCopies = PaperOutput.NormalizeCopies(settings.PrintCopies);
 
         settings.PdfFileNameSeparator = NormalizeFileNameSeparator(settings.PdfFileNameSeparator);
         if (settings.PdfFileNameFields == null || settings.PdfFileNameFields.Count == 0)

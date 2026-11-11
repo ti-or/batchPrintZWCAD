@@ -1,12 +1,12 @@
-AutoCAD 批量打印插件 v1.15.8
+﻿AutoCAD 批量打印插件 v1.16.0
 
 支持版本：
 - AcadBatchPlot.dll：AutoCAD 2015 ~ 2024，共用同一个 DLL（.NET Framework 4.8）。
 - AcadBatchPlot.Core.dll：AutoCAD 2025 ~ 2027，共用同一个 Core DLL（.NET 8）。
 
 支持输出：
-- 批量打印：PDF、PNG、JPG、DWF、DWG。
-- 单张框选打印：PDF。
+- 批量打印：PDF、PNG、JPG、DWF、DWG、纸质（直接送系统打印机/绘图仪）。
+- 单张框选打印：PDF（需要纸质输出时请用批量打印窗口，只勾选一张）。
 - PNG/JPG 使用插件自有 LA_png / LA_jpg 设备，不使用 AutoCAD 自带设备兜底。
 - 清单预览使用当前选择的输出格式；DWG 拆图不提供打印预览。
 

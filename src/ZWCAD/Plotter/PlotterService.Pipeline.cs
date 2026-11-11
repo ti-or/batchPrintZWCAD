@@ -110,11 +110,26 @@ public static partial class PlotterService
             plotInfoValidator.Validate(plotInfo);
             ObjectLineweightPlotStyle.LogEffective(plotSettings, styleChoice, job, "");
 
-            PrepareOutputFile(job.OutputPath);
-            RunPlot(plotInfo, documentName, job.OutputPath, job.DrawingNumber);
+            // 纸质打印直接把图纸交给打印机：没有输出文件，也不做文件落盘前准备与落盘后校验。
+            var printToDevice = job.PrintToDevice;
+            if (!printToDevice)
+            {
+                PrepareOutputFile(job.OutputPath);
+            }
+
+            RunPlot(
+                plotInfo,
+                documentName,
+                job.OutputPath,
+                job.DrawingNumber,
+                printToDevice,
+                job.Copies);
             tr.Commit();
             WaitForPlotIdle();
-            ValidatePlotOutput(job.OutputPath);
+            if (!printToDevice)
+            {
+                ValidatePlotOutput(job.OutputPath);
+            }
         }
         finally
         {
@@ -148,8 +163,14 @@ public static partial class PlotterService
             $"未找到目标布局“{job.SpaceName}”。可用布局: {string.Join(", ", availableLayouts)}。请重新扫描图纸。");
     }
 
-    /** RunPlot：PlotEngine 输出到文件并等待空闲。 */
-    private static void RunPlot(PlotInfo plotInfo, string documentName, string outputPath, string sheetName)
+    /** RunPlot：PlotEngine 输出到文件或直接送打印机并等待空闲。 */
+    private static void RunPlot(
+        PlotInfo plotInfo,
+        string documentName,
+        string outputPath,
+        string sheetName,
+        bool printToDevice = false,
+        int copies = 1)
     {
         using var engine = PlotFactory.CreatePublishEngine();
         // 批打窗自己显示进度与「停止」时，不再弹出引擎进度框，避免把宿主窗盖住/挤到后面。
@@ -180,7 +201,14 @@ public static partial class PlotterService
 
             engine.BeginPlot(progress, null);
             plotStarted = true;
-            engine.BeginDocument(plotInfo, documentName, null, 1, true, outputPath);
+            // plotToFile=false 时由引擎把图送到设备；纸质打印的份数也在这里交给引擎（驱动不支持时会按 1 份处理）。
+            engine.BeginDocument(
+                plotInfo,
+                documentName,
+                null,
+                printToDevice ? Math.Max(1, copies) : 1,
+                !printToDevice,
+                printToDevice ? null : outputPath);
             documentStarted = true;
             progress?.OnBeginSheet();
             sheetStarted = progress != null;

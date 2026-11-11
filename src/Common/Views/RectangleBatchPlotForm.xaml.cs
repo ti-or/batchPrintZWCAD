@@ -287,6 +287,35 @@ public sealed partial class RectangleBatchPlotForm : Window
         UpdateOutputFormatUi();
     }
 
+    /// <summary>切换打印机时刷新清单里的目标提示，并记住选择。</summary>
+    private void Printer_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressComboEvents)
+        {
+            return;
+        }
+
+        SaveCurrentPlotOptions();
+        if (IsPaperOutput)
+        {
+            RefreshFileNames();
+            UpdateVisuals();
+        }
+    }
+
+    /// <summary>份数输入框失焦时规范化显示并刷新清单提示。</summary>
+    private void CopiesBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        var copies = SelectedCopies;
+        _copiesBox.Text = copies.ToString();
+        SaveCurrentPlotOptions();
+        if (IsPaperOutput)
+        {
+            RefreshFileNames();
+            UpdateVisuals();
+        }
+    }
+
     private void Style_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         _styleSettingsButton.IsEnabled = _style.SelectedIndex >= 0 && !IsDwgOutput;
@@ -631,7 +660,13 @@ public sealed partial class RectangleBatchPlotForm : Window
         var device = SelectedDevice();
         if (string.IsNullOrWhiteSpace(device))
         {
-            MessageBox.Show($"未找到可用的 {SelectedOutputFormat} 输出设备。", Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(
+                IsPaperOutput
+                    ? "请先在「打印机」中选择要输出的打印机。"
+                    : $"未找到可用的 {SelectedOutputFormat} 输出设备。",
+                Title,
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 
@@ -643,6 +678,10 @@ public sealed partial class RectangleBatchPlotForm : Window
             SaveCurrentPlotOptions();
             row.Job.LeavePaperMargin = SupportsLeaveMargin && _leaveMargin.IsChecked == true;
             row.Job.PaperMarginMm = ReadMarginValue(_marginInput);
+            // 预览必须与当前输出格式一致：纸质预览按打印机选纸，电子格式预览不能带纸质标记。
+            row.Job.PrintToDevice = IsPaperOutput;
+            row.Job.Copies = IsPaperOutput ? SelectedCopies : 1;
+            row.Job.AllowClosestPaper = IsPaperOutput && _closestPaperCheckBox.IsChecked == true;
             // 预览当前行时同时准备已勾选图纸的全部任意尺寸；当前行未勾选也不能漏掉。
             var previewJobs = _rows
                 .Where(candidate => candidate.Selected || ReferenceEquals(candidate, row))
@@ -773,6 +812,12 @@ public sealed partial class RectangleBatchPlotForm : Window
 
     private void RefreshFileNames()
     {
+        if (IsPaperOutput)
+        {
+            RefreshPaperFileNames();
+            return;
+        }
+
         if (_hasAttributeIdentity)
         {
             RefreshAttributeIdentityFileNames();
@@ -1679,10 +1724,37 @@ public sealed partial class RectangleBatchPlotForm : Window
         }
     }
 
+    /// <summary>纸质打印没有输出文件：清单「文件名」列改为显示目标打印机。</summary>
+    private void RefreshPaperFileNames()
+    {
+        var target = string.IsNullOrWhiteSpace(SelectedPrinter)
+            ? "（未选择打印机）"
+            : SelectedCopies > 1
+                ? $"打印到 {SelectedPrinter} × {SelectedCopies} 份"
+                : $"打印到 {SelectedPrinter}";
+        foreach (var row in _rows)
+        {
+            row.FileName = target;
+        }
+
+        RefreshOutputPaths();
+    }
+
     private void RefreshOutputPaths()
     {
         if (_updating)
         {
+            return;
+        }
+
+        if (IsPaperOutput)
+        {
+            // 纸质打印不生成文件：清空输出路径，避免任何落盘准备。
+            foreach (var row in _rows)
+            {
+                row.Job.OutputPath = "";
+            }
+
             return;
         }
 
@@ -2155,7 +2227,7 @@ public sealed partial class RectangleBatchPlotForm : Window
             return;
         }
 
-        if (_outputDirectoryIsCustom && string.IsNullOrWhiteSpace(_outputDirectory.Text.Trim()))
+        if (!IsPaperOutput && _outputDirectoryIsCustom && string.IsNullOrWhiteSpace(_outputDirectory.Text.Trim()))
         {
             MessageBox.Show("请选择输出路径。", Title, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
@@ -2164,25 +2236,52 @@ public sealed partial class RectangleBatchPlotForm : Window
         var device = SelectedDevice();
         if (string.IsNullOrWhiteSpace(device))
         {
-            MessageBox.Show($"未找到可用的 {SelectedOutputFormat} 输出设备。", Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(
+                IsPaperOutput
+                    ? "请先在「打印机」中选择要输出的打印机；如果列表为空，请先在 Windows 中安装打印机。"
+                    : $"未找到可用的 {SelectedOutputFormat} 输出设备。",
+                Title,
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
             return;
         }
 
-        foreach (var outputDir in selected
-                     .Select(job => Path.GetDirectoryName(job.OutputPath))
-                     .Where(path => !string.IsNullOrWhiteSpace(path))
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        var paperOutput = IsPaperOutput;
+        if (!paperOutput)
         {
-            Directory.CreateDirectory(outputDir!);
+            foreach (var outputDir in selected
+                         .Select(job => Path.GetDirectoryName(job.OutputPath))
+                         .Where(path => !string.IsNullOrWhiteSpace(path))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                Directory.CreateDirectory(outputDir!);
+            }
         }
 
         SaveCurrentPlotOptions();
         ApplyLeaveMarginSelection(selected);
+        var copies = SelectedCopies;
+        var allowClosestPaper = _closestPaperCheckBox.IsChecked == true;
+        foreach (var job in selected)
+        {
+            // 纸质打印送系统打印机；电子输出必须清掉上一次纸质打印留下的标记。
+            job.PrintToDevice = paperOutput;
+            job.Copies = paperOutput ? copies : 1;
+            job.AllowClosestPaper = paperOutput && allowClosestPaper;
+            if (paperOutput)
+            {
+                job.OutputPath = "";
+            }
+        }
+
         var originalPaths = selected.ToDictionary(job => job, job => job.OutputPath);
         string? temporaryDirectory = null;
         var firstJob = selected[0];
-        var directory = Path.GetDirectoryName(firstJob.OutputPath) ?? "";
-        if (string.IsNullOrWhiteSpace(directory))
+        // 纸质打印没有输出文件，不能解析空 OutputPath 的目录；合并 PDF 只在 PDF 输出时计算。
+        var directory = paperOutput
+            ? ""
+            : Path.GetDirectoryName(firstJob.OutputPath) ?? "";
+        if (!paperOutput && string.IsNullOrWhiteSpace(directory))
         {
             directory = GetOutputDirectory(firstJob);
         }
@@ -2208,7 +2307,7 @@ public sealed partial class RectangleBatchPlotForm : Window
             mergeStem += "_合并";
         }
 
-        var mergedOutput = Path.Combine(directory, mergeStem + ".pdf");
+        var mergedOutput = paperOutput ? "" : Path.Combine(directory, mergeStem + ".pdf");
         var mergePdf = IsPdfOutput && _mergePdf.IsChecked == true;
         var mergedOutputPaths = new List<string>();
         var completed = 0;
@@ -2288,8 +2387,12 @@ public sealed partial class RectangleBatchPlotForm : Window
                 }
             }
 
-            _status.Text = $"打印中... 0 / {selected.Count}";
-            progress.Report(0, selected.Count, "准备自定义纸张与输出路径…");
+            _status.Text = paperOutput
+                ? $"正在送打印机... 0 / {selected.Count}"
+                : $"打印中... 0 / {selected.Count}";
+            progress.Report(0, selected.Count, paperOutput
+                ? $"正在准备打印机 {device}…"
+                : "准备自定义纸张与输出路径…");
             Pump();
 
             // 汇总本批所有任意加长尺寸后只更新一次实际 PMP，再进入连续打印。
@@ -2299,12 +2402,16 @@ public sealed partial class RectangleBatchPlotForm : Window
                 beforeJob: job =>
                 {
                     completed++;
-                    _status.Text = $"打印中... {completed} / {selected.Count}";
-                    var finalOutput = originalPaths.TryGetValue(job, out var path) ? path : job.OutputPath;
+                    _status.Text = paperOutput
+                        ? $"正在送打印机... {completed} / {selected.Count}"
+                        : $"打印中... {completed} / {selected.Count}";
+                    var finalOutput = paperOutput
+                        ? PaperOutput.DescribeTarget(device, job.Copies)
+                        : originalPaths.TryGetValue(job, out var path) ? path : job.OutputPath;
                     var detail =
                         $"第 {completed} / {selected.Count} 张\n" +
                         $"布局：{job.SpaceName}\n" +
-                        $"输出：{System.IO.Path.GetFileName(finalOutput)}";
+                        $"输出：{(paperOutput ? finalOutput : System.IO.Path.GetFileName(finalOutput))}";
                     progress?.Report(completed, selected.Count, detail);
                     AppendPrintLog(
                         "INFO",
@@ -2317,9 +2424,11 @@ public sealed partial class RectangleBatchPlotForm : Window
 
             foreach (var result in results)
             {
-                var finalOutput = originalPaths.TryGetValue(result.Job, out var path)
-                    ? path
-                    : result.Job.OutputPath;
+                var finalOutput = paperOutput
+                    ? PaperOutput.DescribeTarget(device, result.Job.Copies)
+                    : originalPaths.TryGetValue(result.Job, out var path)
+                        ? path
+                        : result.Job.OutputPath;
                 AppendPrintLog(
                     result.Succeeded ? "INFO" : "ERROR",
                     result.Succeeded
@@ -2363,7 +2472,7 @@ public sealed partial class RectangleBatchPlotForm : Window
                 }
             }
 
-            _status.Text = $"完成，共 {selected.Count} 张";
+            _status.Text = paperOutput ? $"完成，已送打印机 {selected.Count} 张" : $"完成，共 {selected.Count} 张";
             AppendPrintLog("INFO", $"通用型批量打印完成；成功={selected.Count}；失败=0");
             var printLogPath = SavePrintLog();
             var printLogText = BuildLogText(printLogPath);
@@ -2372,17 +2481,19 @@ public sealed partial class RectangleBatchPlotForm : Window
                 this,
                 mergePdf
                     ? $"打印并合并完成，共 {selected.Count} 张，生成 {mergedOutputPaths.Count} 个 PDF。\n{string.Join("\n", mergedOutputPaths)}{printLogText}"
-                    : $"打印完成，共 {selected.Count} 张。\n{directory}{printLogText}",
+                    : paperOutput
+                        ? $"纸质打印完成，已送 {PaperOutput.DescribeTarget(device, copies)} 共 {selected.Count} 张。{printLogText}"
+                        : $"打印完成，共 {selected.Count} 张。\n{directory}{printLogText}",
                 Title,
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
 
             // 与图框批打一致：先弹完成提示，再打开合并 PDF / 输出目录，避免外部程序抢前台把提示框压到下面。
-            if (mergePdf && _settings.OpenMergedPdfAfterMerge)
+            if (!paperOutput && mergePdf && _settings.OpenMergedPdfAfterMerge)
             {
                 OpenMergedPdfFiles(mergedOutputPaths);
             }
-            else if (!mergePdf && _settings.OpenOutputDirectoryAfterBatchPrint)
+            else if (!paperOutput && !mergePdf && _settings.OpenOutputDirectoryAfterBatchPrint)
             {
                 RevealOutput(null, directory);
             }
@@ -2549,7 +2660,22 @@ public sealed partial class RectangleBatchPlotForm : Window
         _outputFormatCombo.Items.Add("JPG");
         _outputFormatCombo.Items.Add("DWF");
         _outputFormatCombo.Items.Add("DWG");
-        _outputFormatCombo.SelectedIndex = 0;
+        _outputFormatCombo.Items.Add(PaperOutput.FormatName);
+        // 恢复上次的输出格式；旧配置或无效值按 PDF。
+        var savedFormatIndex = 0;
+        if (!string.IsNullOrWhiteSpace(_settings.LastOutputFormat))
+        {
+            for (var i = 0; i < _outputFormatCombo.Items.Count; i++)
+            {
+                if (string.Equals(_outputFormatCombo.Items[i]?.ToString(), _settings.LastOutputFormat, StringComparison.OrdinalIgnoreCase))
+                {
+                    savedFormatIndex = i;
+                    break;
+                }
+            }
+        }
+
+        _outputFormatCombo.SelectedIndex = savedFormatIndex;
         RefreshSavePathModeOptions(preserveSelection: false);
 
         var pdfInstall = AcadPlotterInstaller.InstallBundledPlotter();
@@ -2574,6 +2700,7 @@ public sealed partial class RectangleBatchPlotForm : Window
             "DWF6 ePlot.pc5",
             "ZWPLOT_DWF.pc5",
             "M_DWF.pc5");
+        LoadPrinterOptions(devices);
         foreach (var style in PlotStyleManager.GetAvailableCtbStyles())
         {
             _style.Items.Add(style);
@@ -2585,6 +2712,41 @@ public sealed partial class RectangleBatchPlotForm : Window
         UpdateOutputFormatUi();
         _suppressComboEvents = false;
         _styleSelectionReady = true;
+    }
+
+    /// <summary>
+    /// 填充纸质打印的打印机下拉框：CAD 设备列表中的系统打印机 + Windows 已安装打印机。
+    /// 优先恢复上次选择的打印机，找不到时选第一台。
+    /// </summary>
+    private void LoadPrinterOptions(IReadOnlyList<string> devices)
+    {
+        _printerCombo.Items.Clear();
+        foreach (var printer in PaperOutput.GetSystemPrinters(devices))
+        {
+            _printerCombo.Items.Add(printer);
+        }
+
+        if (_printerCombo.Items.Count > 0)
+        {
+            var index = 0;
+            var saved = _settings.LastPrinterName;
+            if (!string.IsNullOrWhiteSpace(saved))
+            {
+                for (var i = 0; i < _printerCombo.Items.Count; i++)
+                {
+                    if (string.Equals(_printerCombo.Items[i]?.ToString(), saved, StringComparison.OrdinalIgnoreCase))
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+            }
+
+            _printerCombo.SelectedIndex = index;
+        }
+
+        _copiesBox.Text = PaperOutput.NormalizeCopies(_settings.PrintCopies).ToString();
+        _closestPaperCheckBox.IsChecked = _settings.PrintUseClosestPaper;
     }
 
 
@@ -2626,7 +2788,12 @@ public sealed partial class RectangleBatchPlotForm : Window
         var order = _hasAttributeIdentity
             ? $"按图号（同号同名按{spatialOrder}）"
             : spatialOrder;
-        _status.Text = $"识别 {_rows.Count} 个矩形框  |  已选 {selected} 个  |  格式：{SelectedOutputFormat}  |  顺序：{order}  |  输出：{_outputDirectory.Text}";
+        var output = IsPaperOutput
+            ? string.IsNullOrWhiteSpace(SelectedPrinter)
+                ? "未选择打印机"
+                : $"打印到 {PaperOutput.DescribeTarget(SelectedPrinter, SelectedCopies)}"
+            : _outputDirectory.Text;
+        _status.Text = $"识别 {_rows.Count} 个矩形框  |  已选 {selected} 个  |  格式：{SelectedOutputFormat}  |  顺序：{order}  |  输出：{output}";
         ScheduleOverlayIfRebuildNeeded();
     }
 
@@ -2849,10 +3016,14 @@ public sealed partial class RectangleBatchPlotForm : Window
 
     private void UpdateOutputFormatUi()
     {
-        RefreshSavePathModeOptions(preserveSelection: true);
-        if (!_outputDirectoryIsCustom)
+        var paper = IsPaperOutput;
+        if (!paper)
         {
-            UpdateAutomaticOutputDirectory();
+            RefreshSavePathModeOptions(preserveSelection: true);
+            if (!_outputDirectoryIsCustom)
+            {
+                UpdateAutomaticOutputDirectory();
+            }
         }
 
         var plotOutput = !IsDwgOutput;
@@ -2861,6 +3032,18 @@ public sealed partial class RectangleBatchPlotForm : Window
         _leaveMargin.IsEnabled = SupportsLeaveMargin;
         _marginInput.IsEnabled = SupportsLeaveMargin && _leaveMargin.IsChecked == true;
         _mergePdf.IsEnabled = IsPdfOutput;
+
+        // 纸质打印不生成文件：隐藏保存路径相关控件，显示打印机/份数设置。
+        _paperOutputPanel.Visibility = paper
+            ? System.Windows.Visibility.Visible
+            : System.Windows.Visibility.Collapsed;
+        _fileOptionsRow.Visibility = paper
+            ? System.Windows.Visibility.Collapsed
+            : System.Windows.Visibility.Visible;
+        _outputDirectory.IsEnabled = !paper;
+        _browseButton.IsEnabled = !paper;
+        _savePathModeCombo.IsEnabled = !paper;
+
         RefreshFileNames();
         SaveCurrentPlotOptions();
         UpdateVisuals();
@@ -2881,15 +3064,31 @@ public sealed partial class RectangleBatchPlotForm : Window
     }
 
     private string SelectedOutputFormat => _outputFormatCombo.SelectedItem?.ToString()?.Trim() ?? "PDF";
-    private string SelectedOutputExtension => "." + SelectedOutputFormat.ToLowerInvariant();
+    /// <summary>纸质打印：直接送系统打印机，不生成输出文件。</summary>
+    private bool IsPaperOutput => PaperOutput.IsPaperFormat(_outputFormatCombo.SelectedItem?.ToString());
+    private string SelectedOutputExtension => IsPaperOutput ? "" : "." + SelectedOutputFormat.ToLowerInvariant();
     private bool IsPdfOutput => string.Equals(SelectedOutputFormat, "PDF", StringComparison.OrdinalIgnoreCase);
     private bool IsDwgOutput => string.Equals(SelectedOutputFormat, "DWG", StringComparison.OrdinalIgnoreCase);
     private bool IsDwfOutput => string.Equals(SelectedOutputFormat, "DWF", StringComparison.OrdinalIgnoreCase);
-    /// <summary>DWG 拆图不走留白；PNG/JPG 先出 PDF 再转图，留白语义与 PDF 相同。</summary>
-    private bool SupportsLeaveMargin => !IsDwgOutput;
-    private string? AutomaticOutputSubfolder => _savePathModeCombo.SelectedIndex == 1
-        ? FileNameSanitizer.Clean(SelectedOutputFormat)
-        : null;
+    /// <summary>DWG 拆图与纸质打印不走留白；PNG/JPG 先出 PDF 再转图，留白语义与 PDF 相同。</summary>
+    private bool SupportsLeaveMargin => !IsDwgOutput && !IsPaperOutput;
+    private string? AutomaticOutputSubfolder => IsPaperOutput
+        ? null
+        : _savePathModeCombo.SelectedIndex == 1
+            ? FileNameSanitizer.Clean(SelectedOutputFormat)
+            : null;
+
+    /// <summary>当前选中的系统打印机名称；非纸质输出时为空。</summary>
+    private string SelectedPrinter => _printerCombo.SelectedItem?.ToString()?.Trim() ?? "";
+
+    /// <summary>本次纸质打印份数（1-99）；输入非法时按 1 份。</summary>
+    private int SelectedCopies => PaperOutput.NormalizeCopies(int.TryParse(
+        (_copiesBox.Text ?? "").Trim(),
+        System.Globalization.NumberStyles.Integer,
+        System.Globalization.CultureInfo.InvariantCulture,
+        out var copies)
+        ? copies
+        : 1);
 
     private string? CustomOutputDirectory => _outputDirectoryIsCustom
         ? _outputDirectory.Text.Trim()
@@ -2936,10 +3135,12 @@ public sealed partial class RectangleBatchPlotForm : Window
             : $"每个源 DWG 所在目录下的 {subfolder} 文件夹";
     }
 
-    /// <summary>PNG/JPG 与 PDF 共用 PDF 绘图仪，打印后再按设置 DPI 转图。</summary>
-    private string SelectedDevice() => IsDwfOutput
-        ? _dwfPlotDevice
-        : AcadPlotterInstaller.PreferredPdfPlotter;
+    /// <summary>PNG/JPG 与 PDF 共用 PDF 绘图仪，打印后再按设置 DPI 转图；纸质打印用所选打印机。</summary>
+    private string SelectedDevice() => IsPaperOutput
+        ? SelectedPrinter
+        : IsDwfOutput
+            ? _dwfPlotDevice
+            : AcadPlotterInstaller.PreferredPdfPlotter;
     private string SelectedStyle() => _style.SelectedItem?.ToString() ?? "";
 
     /// <summary>记住上次的输出选项（非关键保存：失败只记日志，不打断操作）。</summary>
@@ -2952,18 +3153,30 @@ public sealed partial class RectangleBatchPlotForm : Window
         var leaveMargin = _leaveMargin.IsChecked == true;
         var recognizeByMode = _recognizeByModeCheck.IsChecked == true;
         var marginMm = ReadMarginValue(_marginInput);
+        var outputFormat = SelectedOutputFormat;
+        var printerName = SelectedPrinter;
+        var copies = SelectedCopies;
+        var closestPaper = _closestPaperCheckBox.IsChecked == true;
         var changed = !string.Equals(_settings.LastPlotDevice, device, StringComparison.Ordinal)
             || !string.Equals(_settings.LastStyleSheet, styleSheet, StringComparison.Ordinal)
             || _settings.MergePdf != mergePdf
             || _settings.LeavePaperMargin != leaveMargin
             || _settings.RecognizeTitleByDominantFrameMode != recognizeByMode
-            || !_settings.PaperMarginMm.Equals(marginMm);
+            || !_settings.PaperMarginMm.Equals(marginMm)
+            || !string.Equals(_settings.LastOutputFormat, outputFormat, StringComparison.Ordinal)
+            || !string.Equals(_settings.LastPrinterName, printerName, StringComparison.Ordinal)
+            || _settings.PrintCopies != copies
+            || _settings.PrintUseClosestPaper != closestPaper;
         _settings.LastPlotDevice = device;
         _settings.LastStyleSheet = styleSheet;
         _settings.MergePdf = mergePdf;
         _settings.LeavePaperMargin = leaveMargin;
         _settings.RecognizeTitleByDominantFrameMode = recognizeByMode;
         _settings.PaperMarginMm = marginMm;
+        _settings.LastOutputFormat = outputFormat;
+        _settings.LastPrinterName = printerName;
+        _settings.PrintCopies = copies;
+        _settings.PrintUseClosestPaper = closestPaper;
         if (onlyIfChanged && !changed)
         {
             return;

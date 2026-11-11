@@ -37,6 +37,10 @@ namespace ZwcadBatchPlot;
 
 public static partial class PlotterService
 {
+    /** 纸质打印改纸告警去重：设备|图幅，避免同一批每张都读设置文件写日志。 */
+    private static readonly object PrinterPaperFallbackGate = new();
+    private static readonly HashSet<string> PrinterPaperFallbackWarned = new(StringComparer.OrdinalIgnoreCase);
+
     /** ChooseMedia：按纸名/尺寸/旋转选择介质；栅格毫米匹配失败时走 BestRasterMedia。 */
     private static MediaChoice ChooseMedia(
         PlotSettingsValidator validator,
@@ -46,13 +50,27 @@ public static partial class PlotterService
         Extents2d window,
         out bool usedCachedCatalog)
     {
-        var catalog = GetMediaCatalog(
-            validator,
-            layout.ModelType,
-            deviceName,
-            // 批打已在开始前一次性写入全部纸张；仅首张新增纸触发设备重载，后续精确纸张复用缓存。
-            forceDeviceReload: job.CustomPaperWasAdded,
-            out usedCachedCatalog);
+        IReadOnlyList<MediaCatalogItem> catalog = Array.Empty<MediaCatalogItem>();
+        var catalogFromCache = false;
+        try
+        {
+            catalog = GetMediaCatalog(
+                validator,
+                layout.ModelType,
+                deviceName,
+                // 批打已在开始前一次性写入全部纸张；仅首张新增纸触发设备重载，后续精确纸张复用缓存。
+                forceDeviceReload: job.CustomPaperWasAdded,
+                out catalogFromCache);
+        }
+        catch (Exception ex) when (job.PrintToDevice)
+        {
+            // 打印机离线/驱动异常时 CAD 只报 eInvalidInput，补一层用户能看懂的说明。
+            throw new InvalidOperationException(
+                $"无法读取打印机「{deviceName}」的纸张列表。请确认打印机已开机、在线，且能在 Windows 中正常打印。",
+                ex);
+        }
+
+        usedCachedCatalog = catalogFromCache;
         var names = catalog.Select(x => x.Name).ToList();
         if (names.Count == 0)
         {
@@ -91,6 +109,14 @@ public static partial class PlotterService
 
         // 目录项已把像素换算成毫米。栅格同误差时优先零旋转（对话框横纸+0°）；失败再 BestRasterMedia。
         var matchTolerance = job.RequireExactPaperSize ? ExactMediaToleranceMm : MediaMatchToleranceMm;
+
+        // 纸质打印：打印机纸型来自驱动，不能向 PMP 注册任意纸张。按图幅精确匹配打印机现有纸型，
+        // 匹配不到时按用户勾选决定「停止并列出可用纸张」或「改用最接近的纸张」。
+        if (job.PrintToDevice)
+        {
+            return ChoosePrinterMedia(choices, job, deviceName, targetWidth, targetHeight);
+        }
+
         var exact = PickPreferredMedia(choices.Where(x => x.Error <= matchTolerance));
         if (exact != null && (job.RequireExactPaperSize || IsLongPaperName(job.PaperName ?? "")))
         {
@@ -164,6 +190,102 @@ public static partial class PlotterService
             Name = fallbackName,
             PreferredRotation = PlotRotation.Degrees000
         };
+    }
+
+    /**
+     * ChoosePrinterMedia：纸质打印按打印机实际纸型选纸。
+     * 图幅在打印机纸型里精确命中时直接用；命中不了时按「纸张不匹配时改用最接近的纸张」开关
+     * 决定报错停止还是改纸，避免把 A1 悄悄打到 A4 上。
+     */
+    private static MediaChoice ChoosePrinterMedia(
+        IReadOnlyList<MediaChoice> choices,
+        PlotJob job,
+        string deviceName,
+        double targetWidth,
+        double targetHeight)
+    {
+        var exact = PickPreferredMedia(choices.Where(choice => choice.Error <= MediaMatchToleranceMm));
+        if (exact != null)
+        {
+            return exact;
+        }
+
+        var available = choices
+            .OrderBy(choice => choice.Error)
+            .Take(8)
+            .Select(choice => $"{choice.Name}({choice.WidthMm:0.##}×{choice.HeightMm:0.##}mm)")
+            .ToList();
+        if (!job.AllowClosestPaper)
+        {
+            throw new InvalidOperationException(
+                PaperOutput.BuildPaperMissingMessage(deviceName, targetWidth, targetHeight, available));
+        }
+
+        var fallback = PickPrinterFallbackMedia(choices, targetWidth, targetHeight)
+            ?? throw new InvalidOperationException(
+                PaperOutput.BuildPaperMissingMessage(deviceName, targetWidth, targetHeight, available));
+        WarnPrinterPaperFallback(deviceName, targetWidth, targetHeight, fallback);
+        return fallback;
+    }
+
+    /**
+     * PickPrinterFallbackMedia：按「长宽比偏差 + 尺寸偏差」选最接近图幅的纸张。
+     * 纸质打印默认按纸张布满（ScaleToFit），所以不能挑「能放下但大很多」的纸，
+     * 否则一张 A3 会被放大铺满 A0 或整卷纸。
+     */
+    private static MediaChoice? PickPrinterFallbackMedia(
+        IEnumerable<MediaChoice> choices,
+        double targetWidth,
+        double targetHeight)
+    {
+        var usable = choices.Where(choice => choice.WidthMm > 0d && choice.HeightMm > 0d).ToList();
+        if (usable.Count == 0 || targetWidth <= 0d || targetHeight <= 0d)
+        {
+            return null;
+        }
+
+        var result = usable
+            .OrderBy(choice => MediaShapeScore(choice.WidthMm, choice.HeightMm, targetWidth, targetHeight))
+            .ThenBy(choice => choice.Error)
+            .First();
+        result.PreferredRotation = (result.WidthMm >= result.HeightMm) == (targetWidth >= targetHeight)
+            ? PlotRotation.Degrees000
+            : PlotRotation.Degrees090;
+        return result;
+    }
+
+    /** MediaShapeScore：长宽比偏差与对角线尺寸偏差（取对数，无量纲），越小越接近目标图幅。 */
+    private static double MediaShapeScore(double width, double height, double targetWidth, double targetHeight)
+    {
+        var mediaAspect = Math.Max(width, height) / Math.Min(width, height);
+        var targetAspect = Math.Max(targetWidth, targetHeight) / Math.Min(targetWidth, targetHeight);
+        var aspectScore = Math.Abs(Math.Log(mediaAspect / targetAspect));
+        var mediaDiagonal = Math.Sqrt(width * width + height * height);
+        var targetDiagonal = Math.Sqrt(targetWidth * targetWidth + targetHeight * targetHeight);
+        var sizeScore = Math.Abs(Math.Log(mediaDiagonal / targetDiagonal));
+        return aspectScore + sizeScore;
+    }
+
+    /** WarnPrinterPaperFallback：同一设备同一图幅只记一次改纸告警，避免逐张读设置文件。 */
+    private static void WarnPrinterPaperFallback(
+        string deviceName,
+        double targetWidth,
+        double targetHeight,
+        MediaChoice fallback)
+    {
+        var key = $"{deviceName}|{targetWidth:0.##}x{targetHeight:0.##}";
+        lock (PrinterPaperFallbackGate)
+        {
+            if (!PrinterPaperFallbackWarned.Add(key))
+            {
+                return;
+            }
+        }
+
+        BatchPlotLogger.AddPending(
+            "WARN",
+            $"打印机 {deviceName} 缺少 {targetWidth:0.##}×{targetHeight:0.##}mm 纸张，"
+            + $"已改用 {fallback.Name}（{fallback.WidthMm:0.##}×{fallback.HeightMm:0.##}mm）并按纸张布满打印。");
     }
 
     /** PickPreferredMedia：同误差优先满版、再优先零旋转（同向像素纸），最后按名称。 */
@@ -269,7 +391,10 @@ public static partial class PlotterService
         var plottersDirectory = AcadPlotterInstaller.GetPlottersDirectory();
         // 2027 迁移旧配置后可能同时存在多个同名 PC3。缓存必须跟着 AutoCAD
         // 实际解析到的完整路径及其真实关联 PMP，不能只指纹化程序假定的根目录副本。
-        var devicePath = AcadPlotterInstaller.ResolveActivePlotterPath(deviceName);
+        // 系统打印机没有 PC3 文件，也不能走 SetCurrentConfig（会改会话当前绘图仪）。
+        var devicePath = PaperOutput.IsSystemPrinterDevice(deviceName)
+            ? ""
+            : AcadPlotterInstaller.ResolveActivePlotterPath(deviceName);
         if (string.IsNullOrWhiteSpace(devicePath) && !string.IsNullOrWhiteSpace(plottersDirectory))
             devicePath = Path.Combine(plottersDirectory, deviceName);
 
